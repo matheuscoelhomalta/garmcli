@@ -1,0 +1,7 @@
+interface:
+  display_name: "Garmcli"
+  short_description: "Read-only Garmin history, sync, and exports"
+  default_prompt: "Use $garmcli to query or export my Garmin history, resuming sync when needed and preserving read-only access."
+
+policy:
+  allow_implicit_invocation: true

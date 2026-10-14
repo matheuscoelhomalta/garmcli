@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "garmcli"
+version = "1.0.0"
+description = "Read-only Garmin history, resumable sync, and JSON exports"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Matheus Coêlho"}]
+keywords = ["garmin", "cli", "fitness", "agents", "offline"]
+
+[project.urls]
+Homepage = "https://github.com/matheuscoelhomalta/garmcli"
+Repository = "https://github.com/matheuscoelhomalta/garmcli"
+Issues = "https://github.com/matheuscoelhomalta/garmcli/issues"
+
+[project.scripts]
+garmcli = "garmcli.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
