@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: python -m pip install .
+      - name: Test synthetic workflows
+        run: python -m unittest discover -s tests -v
+      - name: Verify installed entrypoint outside checkout
+        working-directory: ${{ runner.temp }}
+        run: |
+          garmcli --help
+          python -c "import garmcli; from importlib.metadata import version; assert garmcli.__version__ == version('garmcli')"
