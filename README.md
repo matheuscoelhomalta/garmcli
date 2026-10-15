@@ -1,150 +1,147 @@
-# garmcli
+# garmcli — Garmin Connect CLI for health history and exports
 
-A read-only Garmin data CLI built on `gccli`. It saves dated health responses in local SQLite history, resumes interrupted exports, and returns a versioned JSON envelope for agents.
+Export Garmin Connect health data to JSON, keep a local SQLite history, and query it offline. **garmcli** is a read-only command-line tool for personal analysis, scripts, and AI agents, built on [gccli](https://github.com/bpauli/gccli) for Garmin access and authentication.
 
-An independent community tool, not affiliated with or endorsed by Garmin. Live access uses [gccli](https://github.com/bpauli/gccli); local history and exports are managed by garmcli.
+[PyPI](https://pypi.org/project/garmcli/) · [Releases](https://github.com/matheuscoelhomalta/garmcli/releases) · [CI](https://github.com/matheuscoelhomalta/garmcli/actions/workflows/ci.yml) · [Reference](https://github.com/matheuscoelhomalta/garmcli/blob/main/docs/reference.md) · [MIT license](https://github.com/matheuscoelhomalta/garmcli/blob/main/LICENSE)
 
-Requires Python 3.11+ and a working `gccli` installation. Runtime dependencies are Python's standard library. Authentication belongs to `gccli`; this tool does not store passwords or export tokens.
+- Sync 15 health metric families, including sleep, heart rate, HRV, stress, Body Battery, and training readiness.
+- Resume interrupted syncs without fetching successful metric/date pairs again.
+- Read cached history and export JSON without Garmin authentication or network access.
+- List devices and activities; download activities as FIT, GPX, TCX, KML, or CSV.
+- Parse a versioned JSON envelope with explicit completeness, missing data, and errors.
 
-Version 1.0.0 was tested with gccli 1.13.0. The CLI owns its command and envelope contracts; gccli owns Garmin API access and authentication maintenance.
+An independent community tool, not affiliated with or endorsed by Garmin. garmcli does not upload, edit, or delete Garmin records.
 
 ## Install
 
-With Homebrew (installs Python and gccli as dependencies):
+### Homebrew
+
+Installs Python and gccli as dependencies:
 
 ```bash
 brew install matheuscoelhomalta/tap/garmcli
-garmcli --json doctor
+garmcli --help
 ```
 
-The Homebrew package also installs the companion skill at
-`$(brew --prefix garmcli)/share/garmcli/skills/garmcli`.
+### PyPI with uv
 
-With uv from [PyPI](https://pypi.org/project/garmcli/):
-
-Install [gccli](https://github.com/bpauli/gccli#installation) and [uv](https://docs.astral.sh/uv/getting-started/installation/), then:
+Requires Python 3.11+, [uv](https://docs.astral.sh/uv/getting-started/installation/), and a separately installed [gccli](https://github.com/bpauli/gccli#installation) on your PATH:
 
 ```bash
 uv tool install garmcli==1.0.0
+garmcli --help
+```
+
+For a one-off command: `uvx garmcli@1.0.0 --help`. garmcli itself uses only Python's standard library; its PyPI package does not install gccli.
+
+## Quick start
+
+### 1. Authenticate and check setup
+
+If you do not already have a gccli session, sign in with your Garmin Connect email:
+
+```bash
+gccli auth login your-email@example.com
 garmcli --json doctor
 ```
 
-For an isolated one-off command, use `uvx garmcli@1.0.0 --help`.
-Alternatively, install from the release tag with
-`uv tool install git+https://github.com/matheuscoelhomalta/garmcli.git@v1.0.0`.
+Authentication is managed by gccli; garmcli does not store passwords or export tokens. On macOS, use gccli's Keychain backend. `doctor` checks local setup and saved credentials; it does not test live endpoint reachability. Saved expired tokens may refresh on the next live request.
 
-For a local checkout:
+### 2. Sync health history
 
-```bash
-git clone https://github.com/matheuscoelhomalta/garmcli.git
-cd garmcli
-uv tool install .
-```
-
-If authentication is missing, sign in with `gccli auth login your-email@example.com` and then run `doctor` again. On macOS, use the gccli Keychain backend.
-
-For development only, add `--editable` to the install command. A normal installation copies the package into uv's tool environment and keeps working if the source folder moves.
-
-Live queries require gccli and a Garmin Connect session. Cached queries require neither. The code uses platform-specific local data directories; the CI suite tests Linux and macOS with Python 3.11 and 3.14.
-
-## Agent skill
-
-The companion skill lives in [`skills/garmcli/SKILL.md`](skills/garmcli/SKILL.md). From a persistent checkout, install it for Codex:
+Replace the example dates with your desired range. Dates use `YYYY-MM-DD` and both endpoints are included.
 
 ```bash
-mkdir -p "$HOME/.codex/skills"
-ln -s "$PWD/skills/garmcli" "$HOME/.codex/skills/garmcli"
+garmcli --json sync --from 2026-09-14 --to 2026-10-13 \
+  --metrics summary,sleep,hrv
 ```
 
-The link must point to a checkout that stays in place. The command refuses an existing link or directory; inspect it before changing anything. The skill is configured for automatic invocation and covers resumable sync, offline reads, exports, and read-only access.
+Repeat the same command with the same database and account to resume after interruption: successful responses, including empty ones, are skipped; failed and missing requests are retried or fetched. Use `--refresh` when you explicitly want to fetch completed records again. Omit `--metrics` to sync all 15 metric families.
 
-## Export and query history
+### 3. Query and export offline
+
+```bash
+garmcli --json health sleep --from 2026-09-14 --to 2026-10-13 --offline
+
+garmcli --json health hrv --from 2026-09-14 --to 2026-10-13 \
+  --offline --out ./hrv.json
+
+garmcli --json snapshot --date 2026-10-13 \
+  --metrics summary,sleep,hrv --offline
+```
+
+**`health` and `snapshot` always read local history**, even without `--offline`; run `sync` to fetch fresh data. These queries need neither gccli nor a Garmin session. Exports refuse to overwrite existing files; choose a new path. An incomplete export can still write a file and exits nonzero: check the exit status, `ok`, `complete`, and `errors` before analysis.
+
+**Missing data is not zero.** Records distinguish `available`, `empty`, `error`, and `missing`; zero remains a measurement. `complete: true` includes confirmed empty responses and does not mean measurements exist on every day. Raw Garmin payloads can contain missing fields, nulls, and sentinel values; see the [data interpretation reference](https://github.com/matheuscoelhomalta/garmcli/blob/main/docs/reference.md).
+
+## Supported data and commands
+
+Health metric identifiers:
+
+```text
+summary           steps               heart-rate         floors
+sleep             stress              respiration        spo2
+hrv               body-battery        intensity-minutes  training-readiness
+training-status   fitness-age         max-metrics
+```
+
+Metric availability and payload contents depend on Garmin's responses. Empty data or a 404 does not establish that a watch lacks a feature. Resting heart rate is available through `summary`, `heart-rate`, and `sleep`; there is no standalone resting-HR command.
+
+Device and activity commands use live Garmin access:
 
 ```bash
 garmcli --json devices list
-
-garmcli --json sync --from 2026-09-14 --to 2026-10-13
-
-garmcli --json health sleep --from 2026-09-14 --to 2026-10-13 --offline
-
-garmcli --json health heart-rate --from 2026-10-01 --to 2026-10-13 \
-  --offline --out ./heart-rate.json
-
-garmcli --json snapshot --date 2026-10-13 --offline
-
 garmcli --json activities list --limit 10
 garmcli --json activities download 123456789 --format fit --out ./activity.fit
 ```
 
-Global options precede the command: `--json`, `--db PATH`, `--gccli PATH`, `--account-id ID`, and `--timeout SECONDS`. An explicit `--db` keeps a dataset in a selected location; the macOS default is `~/Library/Application Support/garmcli/history.sqlite3`.
+Replace `123456789` with an ID returned by `activities list`. The output directory must already exist. Health exports use JSON.
 
-`health` and `snapshot` query stored history only, even without `--offline`; run `sync` to fetch fresh data. Offline queries do not need Garmin authentication or network access. If a database contains multiple account identities, select one with `--account-id`. Account identities are hashes of the Garmin service domain and normalized account email, not authentication credentials.
+Global options go **before** the command: `--json`, `--db PATH`, `--gccli PATH`, `--account-id ID`, and `--timeout SECONDS`. Use `--db ./history.sqlite3` consistently to select a dataset. The macOS default is `~/Library/Application Support/garmcli/history.sqlite3`; if a database contains multiple accounts, select one with `--account-id`.
 
-## Sync semantics
+See the [command and data reference](https://github.com/matheuscoelhomalta/garmcli/blob/main/docs/reference.md) for sync behavior, JSON fields, exit codes, payload caveats, privacy, and troubleshooting. Use `garmcli --help` or subcommand help for accepted options. With `--json`, command output uses one JSON envelope on stdout and progress goes to stderr. Help remains plain text even with `--json`.
 
-Dates are strict `YYYY-MM-DD`, inclusive, and represent the Garmin calendar date requested. By default, sync fetches these 15 metric families:
+## Companion skill for Codex
 
-`summary`, `steps`, `heart-rate`, `floors`, `sleep`, `stress`, `respiration`, `spo2`, `hrv`, `body-battery`, `intensity-minutes`, `training-readiness`, `training-status`, `fitness-age`, `max-metrics`.
+The [garmcli skill](https://github.com/matheuscoelhomalta/garmcli/blob/main/skills/garmcli/SKILL.md) guides agents through read-only sync, offline queries, exports, and data interpretation. It requires the CLI installation above.
 
-Select a subset with `--metrics summary,sleep,hrv`. Sync waits 0.5 seconds between network requests by default; adjust with `--delay`. gccli owns HTTP retries and token refresh. Ctrl+C stops the command and preserves each already-committed response. Repeat the exact sync command to resume: available and empty records are skipped, failed records are retried, and missing records are fetched. Use `--refresh` to explicitly fetch completed records again.
-
-Ordinary endpoint errors are recorded and independent requests continue. Authentication failures or rate limits stop the run. A request failure is never stored as a zero or an empty result.
-
-`complete: true` means every requested metric/date has a successful response, including confirmed empty responses. It does **not** mean every date contains measurements. Check counts and record statuses before analysis.
-
-## Stable JSON contract
-
-JSON stdout contains one envelope. Progress is sent to stderr.
-
-`--help` returns standard help text, including when `--json` is selected. `doctor` checks saved credentials and local setup; it does not prove live endpoint reachability. Expired saved tokens can still be refreshed by gccli on the next live request.
-
-```json
-{
-  "schema_version": "1",
-  "command": "health",
-  "ok": true,
-  "complete": true,
-  "data": {},
-  "errors": []
-}
-```
-
-The outer schema is controlled by this CLI. Each history record has `date`, `metric`, `status`, `data`, `error`, `fetched_at`, and `attempts`. The `data` field preserves Garmin's response unchanged; Garmin's inner schema can change independently.
-
-| Status | Meaning |
-| --- | --- |
-| `available` | A successful nonempty response; individual fields may still be missing |
-| `empty` | Successful top-level `null`, `[]`, or `{}` |
-| `error` | The request failed; error details are explicit |
-| `missing` | No stored result for that metric/date |
-
-Numbers equal to zero remain data. A 404 or an empty response does not establish that a watch lacks the feature. Raw streams may contain nulls and negative sentinel values; use their descriptors and metric-specific semantics before calculating statistics. Preserve units, timestamps and device attribution.
-
-The requested date is not always the measurement date: some Garmin endpoints return latest-style values or nested historical timestamps. Sleep's calendar date generally identifies the night ending on that day. Check embedded dates and timestamps. Skin temperature in sleep exports is deviation from a baseline, not absolute body temperature. Dedicated Body Battery data may have fewer points than the Body Battery series included in the stress response.
-
-Resting HR is available in `summary`, `heart-rate`, and `sleep`. Standalone resting-HR and race-prediction commands are outside this CLI's v1 surface.
-
-| Exit | Meaning |
-| --- | --- |
-| 0 | Success, including confirmed empty results |
-| 1 | Other failure or incomplete query/export |
-| 2 | Invalid input |
-| 3 | Authentication required |
-| 5 | Rate limited |
-| 130 | Interrupted sync |
-
-File exports refuse to overwrite existing files. The database is account-scoped and commits each response atomically. Local history and exported files can contain personal health data and GPS locations; the application does not export authentication tokens.
-
-## Development and checks
+Homebrew installs the skill under `$(brew --prefix garmcli)/share/garmcli/skills/garmcli`. Copy it into Codex's skill directory:
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+skill_source="$(brew --prefix garmcli)/share/garmcli/skills/garmcli"
+skill_destination="$HOME/.codex/skills/garmcli"
+if [ -e "$skill_destination" ] || [ -L "$skill_destination" ]; then
+  printf '%s\n' "Skill destination already exists; inspect it before changing it."
+else
+  mkdir -p "$HOME/.codex/skills"
+  cp -R "$skill_source" "$skill_destination"
+fi
 ```
 
-Tests use synthetic data and a fake gccli. Personal live-test files are stored separately from this source project.
+Alternatively, from the root of a persistent source checkout, create a link:
 
-Contributions should include tests for changed behavior. Use synthetic fixtures when reporting bugs; do not include personal health exports, database files, passwords or tokens in issues or pull requests.
+```bash
+skill_destination="$HOME/.codex/skills/garmcli"
+if [ -e "$skill_destination" ] || [ -L "$skill_destination" ]; then
+  printf '%s\n' "Skill destination already exists; inspect it before changing it."
+else
+  mkdir -p "$HOME/.codex/skills"
+  ln -s "$PWD/skills/garmcli" "$skill_destination"
+fi
+```
+
+Both commands leave an existing destination untouched, including dangling links. Keep a linked checkout in place; a copied skill must be recopied when you want to update it.
+
+## Compatibility and privacy
+
+Version 1.0.0 was tested with gccli 1.13.0. CI runs synthetic tests on Linux and macOS with Python 3.11 and 3.14. gccli maintains authentication and Garmin API access; garmcli controls its command interface, local history, and outer JSON schema. Garmin's inner response schemas may change independently.
+
+Local history is account-scoped and commits each response separately. Databases and exports can contain personal health data and GPS locations. Keep them private; use synthetic fixtures in bug reports and never attach passwords or tokens.
+
+## Development
+
+See [Contributing](https://github.com/matheuscoelhomalta/garmcli/blob/main/CONTRIBUTING.md) for an isolated development environment, test commands, bug reports, and pull requests. Tests use synthetic data and a fake gccli; no Garmin account is required.
 
 ## License
 
-[MIT](LICENSE). gccli is a separately installed upstream dependency with its own license.
+[MIT](https://github.com/matheuscoelhomalta/garmcli/blob/main/LICENSE). gccli is a separately installed upstream dependency with its own license.

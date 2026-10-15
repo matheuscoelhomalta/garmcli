@@ -5,19 +5,28 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "garmcli"
 version = "1.0.0"
-description = "Read-only Garmin history, resumable sync, and JSON exports"
+description = "Read-only Garmin Connect CLI for resumable sync, SQLite history and JSON exports"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{name = "Matheus Coêlho"}]
-keywords = ["garmin", "cli", "fitness", "agents", "offline"]
+keywords = ["garmin", "garmin-connect", "cli", "health-data", "sleep", "hrv", "sqlite", "json", "ai-agents", "offline"]
+classifiers = [
+  "Environment :: Console",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Utilities",
+]
 
 [project.urls]
 Homepage = "https://github.com/matheuscoelhomalta/garmcli"
 Repository = "https://github.com/matheuscoelhomalta/garmcli"
+Documentation = "https://github.com/matheuscoelhomalta/garmcli/blob/main/docs/reference.md"
 Issues = "https://github.com/matheuscoelhomalta/garmcli/issues"
+Changelog = "https://github.com/matheuscoelhomalta/garmcli/releases"
 
 [project.scripts]
 garmcli = "garmcli.cli:main"
