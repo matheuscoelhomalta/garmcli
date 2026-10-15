@@ -20,14 +20,18 @@ garmcli --json doctor
 The Homebrew package also installs the companion skill at
 `$(brew --prefix garmcli)/share/garmcli/skills/garmcli`.
 
-With uv:
+With uv from [PyPI](https://pypi.org/project/garmcli/):
 
 Install [gccli](https://github.com/bpauli/gccli#installation) and [uv](https://docs.astral.sh/uv/getting-started/installation/), then:
 
 ```bash
-uv tool install git+https://github.com/matheuscoelhomalta/garmcli.git@v1.0.0
+uv tool install garmcli==1.0.0
 garmcli --json doctor
 ```
+
+For an isolated one-off command, use `uvx garmcli@1.0.0 --help`.
+Alternatively, install from the release tag with
+`uv tool install git+https://github.com/matheuscoelhomalta/garmcli.git@v1.0.0`.
 
 For a local checkout:
 
