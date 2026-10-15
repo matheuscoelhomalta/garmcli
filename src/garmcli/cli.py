@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import math
 import os
@@ -12,6 +13,7 @@ import sys
 import time
 
 from .backend import BackendError, GarminBackend
+from .auth import SessionStore, account_identity, login
 from .contracts import METRICS, SCHEMA_VERSION, parse_dates
 from .store import HistoryStore
 
@@ -77,11 +79,16 @@ def parser():
     p = Parser(prog="garmcli", description="Read-only Garmin history and exports")
     p.add_argument("--json", action="store_true", help="emit a stable JSON envelope")
     p.add_argument("--db", type=Path, default=default_db())
-    p.add_argument("--gccli", default="gccli")
     p.add_argument("--account-id")
     p.add_argument("--timeout", type=positive_float, default=120)
     commands = p.add_subparsers(dest="command", required=True)
     commands.add_parser("doctor", help="check setup without exposing credentials")
+    auth = commands.add_parser("auth", help="manage the local Garmin session").add_subparsers(dest="action", required=True)
+    signing_in = auth.add_parser("login", help="sign in with hidden password and MFA prompts")
+    signing_in.add_argument("email")
+    signing_in.add_argument("--domain", choices=["garmin.com", "garmin.cn"], default="garmin.com")
+    auth.add_parser("status", help="check the saved session without a live request")
+    auth.add_parser("logout", help="remove the selected local session; preserve history")
     devices = commands.add_parser("devices").add_subparsers(dest="action", required=True)
     devices.add_parser("list")
     sync = commands.add_parser("sync", help="fetch and persist an inclusive date/metric grid")
@@ -142,7 +149,29 @@ def envelope(command, data=None, errors=None, complete=None):
 
 
 def backend(args):
-    return GarminBackend(executable=args.gccli, timeout=args.timeout)
+    return GarminBackend(timeout=args.timeout)
+
+
+def auth_command(args):
+    if args.action == "login":
+        identity, _, _ = account_identity(args.email, args.domain)
+        if args.account_id and args.account_id != identity:
+            raise CommandError("account_mismatch", "--account-id does not match the requested Garmin account.")
+        if not sys.stdin.isatty():
+            raise BackendError("auth_required", "Run garmcli auth login EMAIL in an interactive terminal.")
+        password = getpass.getpass("Garmin password: ", stream=sys.stderr)
+        if not password:
+            raise UsageError("Password cannot be empty.")
+        result = login(args.email, password, domain=args.domain, timeout=args.timeout,
+                       prompt_mfa=lambda: getpass.getpass("Garmin MFA code: ", stream=sys.stderr))
+        return envelope("auth", result), 0
+    store = SessionStore()
+    status = store.status()
+    if args.account_id and status.get("account_id") != args.account_id:
+        raise CommandError("account_mismatch", "--account-id does not match the selected Garmin account.")
+    if args.action == "logout":
+        status = store.delete()
+    return envelope("auth", status), 0
 
 
 def cached_account(store, args):
@@ -198,7 +227,10 @@ def sync_history(args, dates, metrics):
                     fetched += 1
                     print(f"{date} {metric}: {record['status']} ({fetched} fetched, {skipped} skipped)",
                           file=sys.stderr, flush=True)
-                    if record["status"] == "error" and error_exit(record["error"]) in (3, 5):
+                    if record["status"] == "error" and (
+                        error_exit(record["error"]) in (3, 5)
+                        or record["error"]["code"] in {"credential_store_unavailable", "auth_storage_error", "filesystem_error"}
+                    ):
                         stopped = record["error"]
                         break
                 if stopped:
@@ -239,6 +271,8 @@ def read_history(args, dates, metrics):
 def run(args):
     if args.account_id is not None and not args.account_id.strip():
         raise UsageError("--account-id cannot be empty")
+    if args.command == "auth":
+        return auth_command(args)
     if args.command in ("sync", "health"):
         try:
             dates = parse_dates(args.start, args.end)
@@ -256,15 +290,17 @@ def run(args):
         return read_history(args, dates, select_metrics(args.metrics))
     if args.command == "doctor":
         live = backend(args)
-        data = {"gccli": {"available": False}, "authenticated": False, "credentials_available": False,
+        data = {"backend": {"name": "garminconnect", "available": False}, "authenticated": False, "credentials_available": False,
                 "history": {"path": str(args.db), "exists": args.db.exists(), "ready": False}}
         errors = []
         try:
-            data["gccli"] = {"available": True, "version": live.version()}
+            data["backend"] = {"name": "garminconnect", "available": True, "version": live.version()}
             auth = live.auth_status()
             for key in ("authenticated", "expired", "domain", "expires_at"):
                 if key in auth:
                     data[key] = auth[key]
+            if not auth.get("credentials_available", auth.get("authenticated", False)):
+                raise BackendError("auth_required", "No Garmin session; run garmcli auth login EMAIL.")
             data["account_id"] = live.account_id()
             data["credentials_available"] = True
         except BackendError as exc:
@@ -312,7 +348,7 @@ def emit(result, json_mode):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     json_mode = "--json" in argv
-    command = next((item for item in argv if item in {"doctor", "devices", "sync", "health", "snapshot", "activities"}), "usage")
+    command = next((item for item in argv if item in {"doctor", "auth", "devices", "sync", "health", "snapshot", "activities"}), "usage")
     try:
         args = parser().parse_args(argv)
         command = args.command
@@ -330,8 +366,10 @@ def main(argv=None):
         result, code = envelope(command, errors=[{"code": "destination_exists", "message": "Destination exists; choose a new output path."}]), 1
     except KeyboardInterrupt:
         result, code = envelope(command, errors=[{"code": "interrupted", "message": "Operation interrupted."}]), 130
+    except EOFError:
+        result, code = envelope(command, errors=[{"code": "auth_required", "message": "Login input was closed; run auth login in an interactive terminal."}]), 3
     except (OSError, ValueError, RuntimeError, sqlite3.Error):
-        # Local exceptions may include paths or credential-bearing subprocess text.
+        # Local exceptions may include paths or credential-bearing library text.
         result, code = envelope(command, errors=[{"code": "local_error", "message": "Local operation failed; check history/output paths and setup."}]), 1
     emit(result, json_mode)
     return code

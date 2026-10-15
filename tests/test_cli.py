@@ -30,7 +30,7 @@ class CLIWorkflows(unittest.TestCase):
         self.live = Mock()
         self.live.account_id.return_value = ACCOUNT
         self.live.auth_status.return_value = {"authenticated": True, "expired": False, "domain": "garmin.com", "account_id": ACCOUNT}
-        self.live.version.return_value = "gccli 1.13.0"
+        self.live.version.return_value = "garminconnect 0.3.18"
         self.live.devices.return_value = [{"deviceId": 123, "model": "Synthetic device"}]
         self.live.activities.return_value = [{"activityId": 456}]
 
@@ -168,7 +168,7 @@ class CLIWorkflows(unittest.TestCase):
         self.save("summary", "2026-01-01", data={})
         self.save("summary", "2026-01-02", error={"code": "not_found", "message": "Absent.", "status": 404})
         code, result, _, constructor = self.invoke(
-            "--gccli", "/nonexistent/gccli", "health", "summary",
+            "health", "summary",
             "--from", "2026-01-01", "--to", "2026-01-03", "--offline")
         self.assertEqual(code, 1)
         self.assertEqual([r["status"] for r in result["data"]["records"]], ["empty", "error", "missing"])
@@ -263,10 +263,10 @@ class CLIWorkflows(unittest.TestCase):
         self.live.download.assert_called_once_with("456", "fit", target)
 
     def test_backend_errors_and_local_database_failures_have_envelopes(self):
-        self.live.devices.side_effect = BackendError("executable_missing", "gccli is missing.")
+        self.live.devices.side_effect = BackendError("dependency_missing", "Python dependencies are missing.")
         code, result, _, _ = self.invoke("devices", "list")
         self.assertEqual(code, 1)
-        self.assertEqual(result["errors"][0]["code"], "executable_missing")
+        self.assertEqual(result["errors"][0]["code"], "dependency_missing")
         self.db.write_text("Unrelated file must remain unchanged")
         code, result, _, _ = self.invoke("health", "summary", "--from", "2026-01-01", "--to", "2026-01-01")
         self.assertEqual(code, 1)
@@ -275,16 +275,16 @@ class CLIWorkflows(unittest.TestCase):
 
     def test_doctor_retains_version_and_history_diagnostics_on_expired_auth(self):
         self.live.account_id.side_effect = BackendError("auth_expired", "Authentication required.")
-        self.live.auth_status.return_value = {"authenticated": False, "expired": True, "domain": "garmin.com", "account_id": ACCOUNT}
+        self.live.auth_status.return_value = {"authenticated": False, "credentials_available": True, "expired": True, "domain": "garmin.com", "account_id": ACCOUNT}
         code, result, _, _ = self.invoke("doctor")
         self.assertEqual(code, 3)
-        self.assertEqual(result["data"]["gccli"]["version"], "gccli 1.13.0")
+        self.assertEqual(result["data"]["backend"]["version"], "garminconnect 0.3.18")
         self.assertFalse(result["data"]["authenticated"])
         self.assertTrue(result["data"]["expired"])
         self.assertTrue(result["data"]["history"]["ready"])
 
     def test_doctor_saved_expired_auth_can_refresh_on_live_request(self):
-        self.live.auth_status.return_value = {"authenticated": False, "expired": True, "domain": "garmin.com", "account_id": ACCOUNT}
+        self.live.auth_status.return_value = {"authenticated": False, "credentials_available": True, "expired": True, "domain": "garmin.com", "account_id": ACCOUNT}
         code, result, _, _ = self.invoke("doctor")
         self.assertEqual(code, 0)
         self.assertTrue(result["data"]["credentials_available"])
@@ -304,6 +304,14 @@ class CLIWorkflows(unittest.TestCase):
                 self.assertEqual(self.live.fetch.call_count, 1)
                 self.assertEqual(result["data"]["counts"]["missing"], 3)
 
+    def test_credential_persistence_failure_stops_without_repeating_live_calls(self):
+        self.live.fetch.side_effect = BackendError("auth_storage_error", "Session persistence failed.")
+        code, result, _, _ = self.sync()
+        self.assertEqual(code, 1)
+        self.assertFalse(result["complete"])
+        self.assertEqual(self.live.fetch.call_count, 1)
+        self.assertEqual(result["data"]["counts"]["missing"], 3)
+
     def test_sync_rejects_mismatched_live_account(self):
         code, result, _, _ = self.invoke("--account-id", OTHER_ACCOUNT, "sync",
                                          "--from", "2026-01-01", "--to", "2026-01-01", "--delay", "0")
@@ -312,19 +320,82 @@ class CLIWorkflows(unittest.TestCase):
         self.live.fetch.assert_not_called()
         self.assertFalse(self.db.exists())
 
-    def test_module_entrypoint_and_missing_binary(self):
-        env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
-        result = subprocess.run([sys.executable, "-m", "garmcli", "--help"],
+    def test_module_entrypoint_and_offline_without_dependencies(self):
+        env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
+                   PATH=str(self.root / "empty-path"))
+        result = subprocess.run([sys.executable, "-S", "-m", "garmcli", "--help"],
                                 capture_output=True, text=True, env=env)
         self.assertEqual(result.returncode, 0)
-        self.assertIn("garmcli", result.stdout)
-        result = subprocess.run([sys.executable, "-m", "garmcli", "--json", "--gccli",
-                                 str(self.root / "missing"), "devices", "list"],
+        self.assertIn("auth", result.stdout)
+        result = subprocess.run([sys.executable, "-S", "-m", "garmcli", "--json", "--db", str(self.db),
+                                 "--account-id", ACCOUNT, "health", "sleep", "--from", "2026-01-01",
+                                 "--to", "2026-01-01", "--offline"],
                                 capture_output=True, text=True, env=env)
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 1, result.stderr)
         response = json.loads(result.stdout)
-        self.assertFalse(response["ok"])
-        self.assertEqual(response["errors"][0]["code"], "executable_missing")
+        self.assertFalse(response["complete"])
+        self.assertEqual(response["data"]["records"][0]["status"], "missing")
+
+    def test_auth_status_logout_and_account_guard(self):
+        status = {"authenticated": True, "credentials_available": True, "account_id": ACCOUNT}
+        with patch("garmcli.cli.SessionStore") as store:
+            store.return_value.status.return_value = status
+            store.return_value.delete.return_value = {"authenticated": False, "account_id": None}
+            code, result, _, constructor = self.invoke("auth", "status")
+            self.assertEqual(code, 0)
+            self.assertEqual(result["command"], "auth")
+            self.assertEqual(result["data"], status)
+            constructor.assert_not_called()
+            code, result, _, _ = self.invoke("--account-id", OTHER_ACCOUNT, "auth", "logout")
+            self.assertEqual(code, 1)
+            self.assertEqual(result["errors"][0]["code"], "account_mismatch")
+            store.return_value.delete.assert_not_called()
+            code, result, _, _ = self.invoke("auth", "logout")
+            self.assertEqual(code, 0)
+            self.assertFalse(result["data"]["authenticated"])
+            store.return_value.delete.assert_called_once_with()
+        self.assertFalse(self.db.exists())
+
+    def test_auth_login_hidden_prompts_and_no_secret_output(self):
+        secret_password, secret_mfa = "synthetic-password", "123456"
+        def authenticate(email, password, **options):
+            self.assertEqual(email, "synthetic@example.com")
+            self.assertEqual(password, secret_password)
+            self.assertEqual(options["prompt_mfa"](), secret_mfa)
+            return {"authenticated": True, "credentials_available": True, "account_id": ACCOUNT}
+        with patch("garmcli.cli.sys.stdin.isatty", return_value=True), \
+             patch("garmcli.cli.getpass.getpass", side_effect=[secret_password, secret_mfa]) as prompt, \
+             patch("garmcli.cli.login", side_effect=authenticate):
+            code, result, errors, constructor = self.invoke("auth", "login", "synthetic@example.com")
+            self.assertEqual(code, 0)
+            self.assertTrue(result["data"]["authenticated"])
+            self.assertEqual(prompt.call_count, 2)
+            self.assertNotIn(secret_password, json.dumps(result) + errors)
+            self.assertNotIn(secret_mfa, json.dumps(result) + errors)
+            constructor.assert_not_called()
+        self.assertFalse(self.db.exists())
+
+    def test_auth_noninteractive_invalid_email_and_closed_input_are_safe(self):
+        with patch("garmcli.cli.sys.stdin.isatty", return_value=False), patch("garmcli.cli.login") as authenticate:
+            code, result, _, _ = self.invoke("auth", "login", "synthetic@example.com")
+            self.assertEqual(code, 3)
+            self.assertEqual(result["errors"][0]["code"], "auth_required")
+            authenticate.assert_not_called()
+        code, result, _, _ = self.invoke("auth", "login", "not-an-email")
+        self.assertEqual(code, 2)
+        with patch("garmcli.cli.sys.stdin.isatty", return_value=True), \
+             patch("garmcli.cli.getpass.getpass", side_effect=EOFError):
+            code, result, _, _ = self.invoke("auth", "login", "synthetic@example.com")
+            self.assertEqual(code, 3)
+            self.assertEqual(result["errors"][0]["code"], "auth_required")
+
+    def test_doctor_missing_session_retains_history_and_backend_diagnostics(self):
+        self.live.auth_status.return_value = {"authenticated": False, "credentials_available": False}
+        code, result, _, _ = self.invoke("doctor")
+        self.assertEqual(code, 3)
+        self.assertTrue(result["data"]["backend"]["available"])
+        self.assertTrue(result["data"]["history"]["ready"])
+        self.assertEqual(result["errors"][0]["code"], "auth_required")
 
 
 if __name__ == "__main__":

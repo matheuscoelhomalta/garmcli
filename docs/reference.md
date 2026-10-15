@@ -1,15 +1,19 @@
 # Usage reference
 
-[garmcli](../README.md) is a read-only Garmin data CLI backed by
-[gccli](https://github.com/bpauli/gccli). This reference describes garmcli 1.0.0,
-which requires Python 3.11+ and was tested with gccli 1.13.0. Live Garmin access
-and authentication belong to gccli; local history, resumable sync, and the JSON
-envelope belong to garmcli. garmcli is an independent community tool, not
+[garmcli](../README.md) is a read-only Garmin data CLI using the
+[garminconnect](https://github.com/cyberjunky/python-garminconnect) Python library.
+This reference describes garmcli 2.0.0, requiring Python
+3.12+ and `garminconnect==0.3.18`.
+garmcli owns authentication, its read-only request boundary, local history,
+resumable sync, and JSON envelope. It is an independent community tool, not
 affiliated with or endorsed by Garmin.
 
 ## Command structure
 
 ```text
+garmcli [GLOBAL OPTIONS] auth login EMAIL [--domain garmin.com|garmin.cn]
+garmcli [GLOBAL OPTIONS] auth status
+garmcli [GLOBAL OPTIONS] auth logout
 garmcli [GLOBAL OPTIONS] doctor
 garmcli [GLOBAL OPTIONS] devices list
 garmcli [GLOBAL OPTIONS] sync --from DATE --to DATE [--metrics LIST] [--refresh] [--delay SECONDS]
@@ -27,9 +31,8 @@ help text. Help remains text even when `--json` is selected.
 | --- | --- | --- |
 | `--json` | Off | Emit one versioned JSON envelope on stdout. |
 | `--db PATH` | Platform-specific path below | Choose the SQLite history file. |
-| `--gccli PATH` | `gccli` | Choose the upstream executable, otherwise resolved through `PATH`. |
 | `--account-id ID` | Automatic for cached reads | Select a cached account; during sync, require a match with the authenticated account. |
-| `--timeout SECONDS` | `120` | Timeout for each gccli subprocess; must be a finite number greater than zero. |
+| `--timeout SECONDS` | `120` | Total timeout for each live data query or download, including retries and session refresh; must be a finite number greater than zero. |
 
 The default history path is calculated as follows by the implementation; these
 paths do not imply that every platform has been tested:
@@ -53,26 +56,48 @@ garmcli --json devices list
 garmcli --json activities list --limit 10
 ```
 
-`doctor` reports the gccli version, saved-credential availability, account identity
-when available, and whether the history file can be opened. It checks local setup
-and saved credentials, not live endpoint reachability. Expired saved tokens can
-still be refreshed by gccli on the next live request; the presence of saved
-credentials does not guarantee a successful Garmin request.
+`doctor` reports local backend-library availability and version under
+`data.backend` (`available` and `version`), saved-session availability, account
+identity when available, and whether the history file can be opened. It does not
+contact Garmin or prove live endpoint reachability. Expired saved tokens may be
+refreshed on the next live request; a saved session does not guarantee success.
 
 `devices list` and `activities list` are live queries. Their envelope `data` is
 the upstream JSON response. The activity limit defaults to `20` and accepts
 integers from `1` through `1000`.
 
-Live queries require a working gccli installation and Garmin Connect session.
-If authentication is missing, sign in using gccli, then rerun `doctor`:
+The positive finite `--timeout` defaults to 120 seconds per live data query or
+download. An internal Python worker enforces this total limit across network
+requests, refresh and retries. Interactive `auth login` is outside this worker
+time limit. No separate runtime executable is required.
+
+## Authentication
 
 ```bash
-gccli auth login your-email@example.com
+garmcli auth login your-email@example.com
+garmcli --json auth status
 garmcli --json doctor
+garmcli auth logout
 ```
 
-On macOS, use the gccli Keychain backend. garmcli does not store passwords or
-export authentication tokens.
+`auth login` starts a fresh login. It accepts an email and optional
+`--domain garmin.com` (the default) or `--domain garmin.cn`. Passwords and MFA
+codes are entered through hidden prompts, never command arguments or environment
+variables. Interactive authentication needs a terminal; do not put secrets in
+scripts or pipe them into the command.
+
+Sessions are stored using `keyring` in macOS Keychain or Linux Secret Service.
+If a secure store is unavailable, authentication fails rather than falling back
+to plaintext storage. garmcli does not save passwords or expose a raw token
+export command. `auth status` checks local state, not a Garmin endpoint.
+`auth logout` removes only garmcli's local session; it does not delete Garmin
+records or local SQLite history.
+
+When upgrading from 1.0.0, sign in again with `auth login`. Existing SQLite
+history needs no migration or reset. Using the same normalized email and domain
+preserves account IDs. The old `--gccli` global option is removed. Installing
+garmcli supplies its required Python libraries automatically; see the
+[installation instructions](../README.md#install).
 
 ## Sync dated health history
 
@@ -88,23 +113,23 @@ can differ from timestamps embedded in a response.
 
 By default, sync requests all 15 metric families in the following order:
 
-| Metric name | gccli command used before the date and `--json` |
+| Metric name | Data family |
 | --- | --- |
-| `summary` | `health summary` |
-| `steps` | `health steps view` |
-| `heart-rate` | `health hr` |
-| `floors` | `health floors` |
-| `sleep` | `health sleep` |
-| `stress` | `health stress view` |
-| `respiration` | `health respiration` |
-| `spo2` | `health spo2` |
-| `hrv` | `health hrv` |
-| `body-battery` | `health body-battery view` |
-| `intensity-minutes` | `health intensity-minutes view` |
-| `training-readiness` | `health training-readiness` |
-| `training-status` | `health training-status` |
-| `fitness-age` | `health fitness-age` |
-| `max-metrics` | `health max-metrics` |
+| `summary` | Daily summary |
+| `steps` | Steps |
+| `heart-rate` | Heart rate |
+| `floors` | Floors |
+| `sleep` | Sleep |
+| `stress` | Stress |
+| `respiration` | Respiration |
+| `spo2` | Pulse oximetry |
+| `hrv` | Heart rate variability |
+| `body-battery` | Body Battery |
+| `intensity-minutes` | Intensity minutes |
+| `training-readiness` | Training readiness |
+| `training-status` | Training status |
+| `fitness-age` | Fitness age |
+| `max-metrics` | Max metrics |
 
 `--metrics` accepts a comma-separated selection of these exact names, without
 spaces. Repeated names are deduplicated while preserving their first occurrence.
@@ -125,10 +150,12 @@ resume an interrupted or incomplete sync:
 - Stored `error` records are retried, and `missing` records are fetched.
 - A retry or refresh replaces the stored response and increments its `attempts`.
 
-gccli owns HTTP retries and token refresh; garmcli does not add a retry loop around
-each failed request. Ordinary endpoint errors are stored explicitly and
-independent requests continue. Authentication failures and rate limits stop the
-run. A failed request is never stored as zero or as an empty response.
+The native backend refreshes a session after HTTP 401 and retries rate limits
+(HTTP 429) up to three times, with each wait capped at 30 seconds, and server
+errors (HTTP 5xx) up to twice, within the operation timeout. Ordinary endpoint
+errors are stored explicitly and independent requests continue. Persistent
+authentication failures and rate limits stop the run. A failed request is never
+stored as zero or as an empty response.
 
 Ctrl+C preserves already-committed responses. An interrupted sync reports
 `data.interrupted: true`, `complete: false`, and exits `130`; repeat the same sync
@@ -146,7 +173,9 @@ Sync returns the account ID, range, selected metrics, and `counts`:
 ## Read and export cached history
 
 `health` and `snapshot` always read local history, even without `--offline`.
-They never fetch implicitly and require neither gccli nor Garmin authentication.
+They never fetch implicitly and require neither Garmin authentication nor the
+live backend libraries. They do not import the SDK or keyring, access the
+secure session store, or make network requests.
 Run `sync` first when fresh data is needed.
 
 ```bash
@@ -185,11 +214,11 @@ in place of the synthetic example. Account IDs are SHA-256 hashes of
 case-folded. They distinguish Garmin service domains and accounts; they are not
 authentication credentials.
 
-Sync resolves the authenticated gccli account and pins its health requests to
+Sync resolves the authenticated garmcli account and pins its health requests to
 that identity. Passing a different `--account-id` fails with `account_mismatch`;
 it cannot redirect live data into another account's history. The option does not
-switch gccli accounts for `doctor`, device queries, or activity queries. Manage
-the active live account through gccli.
+switch accounts for `doctor`, device queries, or activity queries. Manage the
+active live account through `garmcli auth login`.
 
 ## Download activity files
 
@@ -203,7 +232,7 @@ the upstream service. `--format` and `--out` are required. The destination's
 parent directory must exist, and an existing destination is refused.
 
 The download is a live request, separate from dated health history. On success,
-the file is published only after gccli produces a nonempty regular file. The
+the file is published only after the backend produces a nonempty regular file. The
 JSON envelope contains metadata (`path`, `bytes`, `activity_id`, `format`), not
 the file contents. garmcli does not decode or validate the activity format.
 
@@ -246,7 +275,8 @@ The example is synthetic. The envelope always contains `schema_version`,
 (`activities` for either activity subcommand). `data` can be `null` on failure.
 Errors have `code` and `message`, optionally an HTTP `status`; history errors also
 identify their `date` and `metric`. External failure messages are sanitized;
-arbitrary gccli stdout/stderr is not echoed as an error message.
+arbitrary backend responses, credentials and session tokens are not echoed as
+error messages.
 
 Grid-operation results (`sync`, `health`, `snapshot`) also include a
 `complete` boolean. Early validation or setup failures can omit it. `ok` is true
@@ -304,28 +334,30 @@ as `invalid_input` (exit `2`); a health-export destination that exists is
 - Dedicated Body Battery data may have fewer points than the Body Battery series
   included in the stress response.
 - Resting heart rate is available in `summary`, `heart-rate`, and `sleep`.
-  Standalone resting-HR and race-prediction commands are outside the v1 surface.
+  Standalone resting-HR and race-prediction commands are outside this command surface.
 
 ## Troubleshooting
 
 | Symptom or error | Supported next action |
 | --- | --- |
-| `executable_missing` | Install gccli or place it on `PATH`; alternatively pass `--gccli PATH` before the command. Run `doctor` again. |
-| Live authentication failure (exit `3`) | Check the saved session with gccli and sign in with `gccli auth login your-email@example.com` when needed, then rerun the command. Expired saved credentials alone do not prove login is necessary. |
+| Backend library unavailable | Repair the garmcli installation so its declared Python dependencies are installed, then run `doctor` again. |
+| Secure session store unavailable | Make macOS Keychain or Linux Secret Service available to this user session, then rerun the auth command. There is no plaintext fallback. |
+| Live authentication failure (exit `3`) | Check `garmcli --json auth status` and sign in with `garmcli auth login your-email@example.com` when needed, then rerun the command. Expired saved credentials alone do not prove login is necessary. |
 | Rate limit (exit `5`) | Stop live requests and retry later. Resume the same sync to reuse completed records; `--delay` controls spacing between subsequent fetch attempts. garmcli does not specify a Garmin cooldown duration. |
 | `account_required` with no cached account | Sync the intended range first, or select a known cached account ID and the correct `--db`. Supplying an ID alone does not fetch data. |
 | `account_required` with multiple cached accounts | Pass the intended `--account-id` before the command. |
-| `account_mismatch` | Use the ID matching the authenticated gccli account, or switch the live account through gccli before syncing. |
+| `account_mismatch` | Use the ID matching the authenticated account, or sign in to the intended live account with `garmcli auth login` before syncing. |
 | `incomplete_history`, stored errors, or `complete: false` | Inspect statuses and errors; sync the same range and metrics to fetch missing records and retry failures, then rerun the cached query/export. |
 | Confirmed `empty` result that needs another fetch | Use `sync --refresh` with the required range and metrics; ordinary resumption skips empty records. |
 | `destination_exists`, or activity `invalid_input` saying the destination exists | Choose a new output path; exports do not overwrite existing files. |
 | `history_unavailable`, `local_error`, or `filesystem_error` | Check the database/output path, parent directory, permissions, and history schema. Use `--db` to select a valid garmcli database or a new unused path; unrelated or unsupported databases are refused. |
-| `timeout` | Check gccli setup and connectivity; increase the positive finite global `--timeout` if a longer subprocess wait is appropriate. |
+| `timeout` | Check setup and connectivity; increase the positive finite global `--timeout` if a longer total live-operation limit is appropriate. |
 | `invalid_input` for dates, metrics, limits, or numeric options | Match the command syntax and bounds above; global options precede commands. |
 
 ## Read-only scope and personal data
 
-garmcli exposes a fixed read-only upstream command allowlist. It does not create,
+garmcli exposes a fixed read-only GET allowlist for data requests. Login and
+session refresh perform the authentication requests required by Garmin. It does not create,
 schedule, upload, edit, or delete Garmin records. Local sync and exports do write
 files: history is account-scoped, and each response is committed atomically.
 History and exports can contain personal health data and GPS locations, even

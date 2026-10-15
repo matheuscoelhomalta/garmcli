@@ -5,16 +5,16 @@ description: "Reads and exports personal Garmin Connect health and activity data
 
 # Garmcli
 
-Use the installed `garmcli` command from any working directory. It wraps gccli for read-only Garmin access and saves responses in account-scoped SQLite history. It does not modify records on Garmin.
+Use the installed `garmcli` command from any working directory. It uses the garminconnect Python library for read-only Garmin access and saves responses in account-scoped SQLite history. It does not modify records on Garmin.
 
 ## Start with the requested data
 
 1. Verify `command -v garmcli`. Use `garmcli --help` and subcommand help when the command surface is unfamiliar. If the executable is missing, report the missing installation; do not install unrelated tools or silently switch backends.
 2. Resolve the requested metric, date range and output destination from the user's request and available context. Dates are inclusive, strict `YYYY-MM-DD`; replace example dates below with the requested range. Resolve relative periods in the user's timezone. Prefer complete local days unless the user requests today's partial data. Clarify only essential unresolved scope; preserve settled choices.
-3. Prefer stored history for historical queries. `health` and `snapshot` always read SQLite, even without `--offline`, and need neither Garmin authentication nor gccli. Check completeness and `fetched_at`; disclose stale or partial data when it affects the answer.
-4. When requested data is missing or the user requests current data, sync the smallest required metric/date set, then query history. Before the first live operation, use `garmcli --json doctor` to check binary, saved credentials and database setup. A successful doctor does not verify live endpoint reachability.
+3. Prefer stored history for historical queries. `health` and `snapshot` always read SQLite, even without `--offline`, and need neither Garmin authentication nor the live backend libraries. They do not import the SDK or keyring, access the secure store, or use the network. Check completeness and `fetched_at`; disclose stale or partial data when it affects the answer.
+4. When requested data is missing or the user requests current data, sync the smallest required metric/date set, then query history. Before the first live operation, use `garmcli --json doctor` to check backend-library availability, saved-session availability and database setup. `data.backend` contains `available` and `version`. A successful doctor does not verify live endpoint reachability.
 
-Global flags precede the command: `--json`, `--db PATH`, `--gccli PATH`, `--account-id ID`, `--timeout SECONDS`. Use `--json` for parsed output; help remains plain text. On macOS the default history is under `~/Library/Application Support/garmcli/history.sqlite3`. Preserve an explicitly selected database throughout the task.
+Global flags precede the command: `--json`, `--db PATH`, `--account-id ID`, `--timeout SECONDS`. The timeout defaults to 120 seconds per live data query or download, including refresh and retries; interactive login is outside that worker limit. Use `--json` for parsed output; help remains plain text. On macOS the default history is under `~/Library/Application Support/garmcli/history.sqlite3`. Preserve an explicitly selected database throughout the task.
 
 ## Resumable sync
 
@@ -25,7 +25,7 @@ garmcli --json sync --from 2026-09-14 --to 2026-10-13 \
 
 Each completed request commits separately. Resume an interrupted or failed sync by repeating the same database, date range and metrics. Successful `available` and `empty` results are skipped; `error` results are retried; `missing` results are fetched. Do not add `--refresh` merely to resume. For explicitly requested fresh data, use `--refresh` on the relevant dates; confirmed empty responses can change after later device synchronization.
 
-Read `data.counts`: `requested`, `fetched`, `skipped`, `available`, `empty`, `errors`, `missing`. Also check `ok`, `complete`, `errors` and `data.interrupted`. Ordinary endpoint errors are recorded while independent requests continue; authentication and rate-limit failures stop the run. gccli owns HTTP retries and token refresh; preserve the default request delay unless there is a reason to change it. Do not repeatedly retry authentication failures or rate limits without addressing their cause.
+Read `data.counts`: `requested`, `fetched`, `skipped`, `available`, `empty`, `errors`, `missing`. Also check `ok`, `complete`, `errors` and `data.interrupted`. Ordinary endpoint errors are recorded while independent requests continue; authentication and rate-limit failures stop the run. The native backend refreshes on HTTP 401 and bounds HTTP 429/5xx retries within the operation timeout; preserve the default request delay unless there is a reason to change it. Do not repeatedly retry authentication failures or rate limits without addressing their cause.
 
 `complete: true` means every requested metric/date received a successful response, including empty results. It does not establish that measurements exist on every day. After SIGINT, completed records remain saved and exit 130 indicates interruption.
 
@@ -66,8 +66,10 @@ Discover the actual activity ID from `activities list`; the ID above is illustra
 
 ## Authentication and boundaries
 
-Use existing gccli authentication. Saved expired tokens can refresh on the next live request. If login is needed within the authorized task, use the normal `gccli auth login` flow and available authorized credentials; never expose passwords or tokens. Never call `gccli auth token` or `gccli auth export`. Account recovery and password/MFA changes require separate explicit authorization.
+Use `garmcli --json auth status` to inspect local session availability. Saved expired tokens can refresh on the next live request. If login is needed within the authorized task, use `garmcli auth login your-email@example.com` with the actual authorized email. For Garmin China add `--domain garmin.cn`; the default domain is `garmin.com`. Login starts a fresh session and uses hidden password and MFA prompts, never secret arguments or environment variables. Complete authorized authentication using available credentials and matching verification codes; never expose them. Account recovery and password/MFA changes require separate explicit authorization.
 
-Keep this skill read-only on Garmin: do not upload activities, create or schedule workouts, edit settings, delete records or call gccli write commands. Local sync and requested file exports are permitted within the user's task. Export only requested data; archives can contain health/profile data and GPS locations. Do not share files externally or create scheduled syncs unless requested.
+Sessions require macOS Keychain or Linux Secret Service through `keyring`; there is no plaintext fallback or raw token export. If unavailable, report the secure-store blocker and continue independent offline work. `garmcli auth logout` removes only garmcli's local session and must be requested; it preserves Garmin records and SQLite history. An upgrade from 1.0.0 requires fresh garmcli login, but no history migration or reset. The same normalized email and domain retain the same SHA-256 account ID.
+
+Keep this skill read-only on Garmin: do not upload activities, create or schedule workouts, edit settings, delete Garmin records or bypass the fixed data-request allowlist. Local sync and requested file exports are permitted within the user's task. Export only requested data; archives can contain health/profile data and GPS locations. Do not share files externally or create scheduled syncs unless requested.
 
 For unattended work, continue independent authorized offline reads when possible. Do not wait for an absent user or invent credentials, scope or authorization. Report assumptions and blockers, and leave dependent work pending when required information or access is unavailable.

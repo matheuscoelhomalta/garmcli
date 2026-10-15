@@ -7,23 +7,11 @@ from typing import Any
 
 SCHEMA_VERSION = "1"
 
-METRICS: dict[str, list[str]] = {
-    "summary": ["health", "summary"],
-    "steps": ["health", "steps", "view"],
-    "heart-rate": ["health", "hr"],
-    "floors": ["health", "floors"],
-    "sleep": ["health", "sleep"],
-    "stress": ["health", "stress", "view"],
-    "respiration": ["health", "respiration"],
-    "spo2": ["health", "spo2"],
-    "hrv": ["health", "hrv"],
-    "body-battery": ["health", "body-battery", "view"],
-    "intensity-minutes": ["health", "intensity-minutes", "view"],
-    "training-readiness": ["health", "training-readiness"],
-    "training-status": ["health", "training-status"],
-    "fitness-age": ["health", "fitness-age"],
-    "max-metrics": ["health", "max-metrics"],
-}
+METRICS = (
+    "summary", "steps", "heart-rate", "floors", "sleep", "stress",
+    "respiration", "spo2", "hrv", "body-battery", "intensity-minutes",
+    "training-readiness", "training-status", "fitness-age", "max-metrics",
+)
 
 _STATUSES = {"available", "empty", "error", "missing"}
 _SAFE_ERROR_CODES = {
@@ -32,7 +20,8 @@ _SAFE_ERROR_CODES = {
     "bad_request", "invalid_input", "invalid_json", "executable_missing",
     "timeout", "network_error", "server_error", "api_error", "backend_error",
     "upstream_error", "filesystem_error", "download_failed", "interrupted",
-    "history_error", "incomplete", "usage_error", "error",
+    "history_error", "incomplete", "usage_error", "error", "dependency_missing",
+    "credential_store_unavailable", "auth_storage_error",
 }
 
 
@@ -75,11 +64,14 @@ def safe_error(error: Any) -> dict[str, Any]:
         message = {
             "invalid_input": "Invalid input.",
             "usage_error": "Invalid command arguments.",
-            "invalid_json": "gccli returned invalid JSON.",
-            "executable_missing": "gccli executable was not found.",
-            "timeout": "gccli request timed out.",
+            "invalid_json": "Garmin returned invalid JSON.",
+            "executable_missing": "A required executable was not found.",
+            "dependency_missing": "Required Python dependencies are missing; reinstall garmcli.",
+            "credential_store_unavailable": "The system credential store is unavailable or locked.",
+            "auth_storage_error": "The local session could not be stored securely.",
+            "timeout": "Garmin request timed out.",
             "filesystem_error": "The local file operation failed.",
-            "download_failed": "gccli did not produce a valid activity file.",
+            "download_failed": "Garmin did not produce a valid activity file.",
             "interrupted": "The operation was interrupted.",
             "history_error": "The local history operation failed.",
             "incomplete": "The requested data is incomplete.",
