@@ -10,10 +10,22 @@ Version 1.0.0 was tested with gccli 1.13.0. The CLI owns its command and envelop
 
 ## Install
 
+With Homebrew (installs Python and gccli as dependencies):
+
+```bash
+brew install matheuscoelhomalta/tap/garmcli
+garmcli --json doctor
+```
+
+The Homebrew package also installs the companion skill at
+`$(brew --prefix garmcli)/share/garmcli/skills/garmcli`.
+
+With uv:
+
 Install [gccli](https://github.com/bpauli/gccli#installation) and [uv](https://docs.astral.sh/uv/getting-started/installation/), then:
 
 ```bash
-uv tool install git+https://github.com/matheuscoelhomalta/garmcli.git
+uv tool install git+https://github.com/matheuscoelhomalta/garmcli.git@v1.0.0
 garmcli --json doctor
 ```
 
